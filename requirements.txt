@@ -4,3 +4,5 @@ lxml==5.1.0; platform_system != "Windows"
 lxml; platform_system == "Windows"
 fpdf2==2.7.9
 Pillow==10.4.0
+html2text==2024.2.26
+tqdm==4.66.5

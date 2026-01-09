@@ -11,6 +11,11 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import json
+try:
+    import html2text
+    HTML2TEXT_AVAILABLE = True
+except ImportError:
+    HTML2TEXT_AVAILABLE = False
 
 
 class HTMLContentExtractor:
@@ -213,9 +218,60 @@ class HTMLContentExtractor:
         
         return images
     
+    def extract_markdown(self, output_file='output/extracted_content.md'):
+        """
+        Extract content in Markdown format.
+        Preserves formatting like headings, bold, italic, links, lists, etc.
+        """
+        if not HTML2TEXT_AVAILABLE:
+            print("⚠ Warning: html2text not installed. Install with: pip install html2text")
+            print("  Falling back to plain text extraction.")
+            return self.extract_text(output_file.replace('.md', '.txt'))
+        
+        if not self.soup:
+            self.load_html()
+        
+        # Remove script and style elements
+        for script in self.soup(['script', 'style', 'meta', 'link', 'noscript']):
+            script.decompose()
+        
+        # Find main content
+        main_content = self.soup.find('main') or self.soup.find('article') or self.soup.find(id='content') or self.soup
+        
+        # Configure html2text
+        h = html2text.HTML2Text()
+        h.body_width = 0  # Don't wrap lines
+        h.ignore_links = False
+        h.ignore_images = False
+        h.ignore_emphasis = False
+        h.skip_internal_links = False
+        h.inline_links = True
+        h.protect_links = True
+        h.unicode_snob = True
+        
+        # Convert to Markdown
+        markdown_content = h.handle(str(main_content))
+        
+        # Clean up excessive newlines
+        markdown_content = re.sub(r'\n{4,}', '\n\n\n', markdown_content)
+        
+        # Create output directory
+        os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+        
+        # Write to file
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("# Collect Earth Tutorials - OpenForis\n\n")
+            f.write("*Extracted content in Markdown format*\n\n")
+            f.write("---\n\n")
+            f.write(markdown_content)
+        
+        print(f"✓ Extracted Markdown to: {output_file}")
+        return markdown_content
+    
     def extract_all(self, text_output='output/extracted_text.txt', 
                     images_output='output/image_urls.json',
-                    download_images=False):
+                    download_images=False,
+                    markdown_output='output/extracted_content.md'):
         """
         Extract both text and images.
         """
@@ -228,6 +284,11 @@ class HTMLContentExtractor:
         # Extract text
         text, accordions = self.extract_text(text_output)
         
+        # Extract Markdown
+        markdown = None
+        if HTML2TEXT_AVAILABLE and markdown_output:
+            markdown = self.extract_markdown(markdown_output)
+        
         # Extract images
         images = self.extract_images(images_output, download=download_images)
         
@@ -236,6 +297,8 @@ class HTMLContentExtractor:
         print("="*80)
         print(f"\nSummary:")
         print(f"  - Text output: {text_output}")
+        if markdown_output and HTML2TEXT_AVAILABLE:
+            print(f"  - Markdown output: {markdown_output}")
         print(f"  - Images found: {len(images)}")
         print(f"  - Accordion sections: {len(accordions)}")
         
@@ -252,6 +315,7 @@ def main():
     # Configuration
     HTML_FILE = 'input/openforis_website_html.txt'
     TEXT_OUTPUT = 'output/extracted_text.txt'
+    MARKDOWN_OUTPUT = 'output/extracted_content.md'
     IMAGES_OUTPUT = 'output/image_urls.json'
     DOWNLOAD_IMAGES = False  # Set to True to download images
     
@@ -264,6 +328,7 @@ def main():
     extractor = HTMLContentExtractor(HTML_FILE)
     results = extractor.extract_all(
         text_output=TEXT_OUTPUT,
+        markdown_output=MARKDOWN_OUTPUT,
         images_output=IMAGES_OUTPUT,
         download_images=DOWNLOAD_IMAGES
     )

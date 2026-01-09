@@ -8,6 +8,7 @@ Generate a PDF from the extracted HTML while preserving the order of text and im
 import os
 import json
 import hashlib
+import re
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -25,6 +26,74 @@ def _hash_url(url: str) -> str:
 def _safe(text: str) -> str:
     """Best-effort ASCII/latin-1 fallback to avoid font issues."""
     return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def _parse_markdown_inline(text: str) -> list:
+    """
+    Parse inline Markdown formatting and return segments with styles.
+    Returns list of tuples: (text, style_dict)
+    Supports: **bold**, *italic*, `code`, [links](url)
+    """
+    segments = []
+    i = 0
+    current_text = ""
+    
+    while i < len(text):
+        # Bold: **text**
+        if text[i:i+2] == '**':
+            if current_text:
+                segments.append((current_text, {}))
+                current_text = ""
+            end = text.find('**', i+2)
+            if end != -1:
+                segments.append((text[i+2:end], {'bold': True}))
+                i = end + 2
+                continue
+        
+        # Italic: *text* (but not **)
+        elif text[i] == '*' and (i == 0 or text[i-1:i+1] != '**') and (i+1 >= len(text) or text[i:i+2] != '**'):
+            if current_text:
+                segments.append((current_text, {}))
+                current_text = ""
+            end = i + 1
+            while end < len(text) and text[end] != '*':
+                end += 1
+            if end < len(text):
+                segments.append((text[i+1:end], {'italic': True}))
+                i = end + 1
+                continue
+        
+        # Code: `text`
+        elif text[i] == '`':
+            if current_text:
+                segments.append((current_text, {}))
+                current_text = ""
+            end = text.find('`', i+1)
+            if end != -1:
+                segments.append((text[i+1:end], {'code': True}))
+                i = end + 1
+                continue
+        
+        # Links: [text](url)
+        elif text[i] == '[':
+            match = re.match(r'\[([^\]]+)\]\(([^\)]+)\)', text[i:])
+            if match:
+                if current_text:
+                    segments.append((current_text, {}))
+                    current_text = ""
+                link_text = match.group(1)
+                link_url = match.group(2)
+                segments.append((link_text, {'link': link_url}))
+                i += len(match.group(0))
+                continue
+        
+        current_text += text[i]
+        i += 1
+    
+    if current_text:
+        segments.append((current_text, {}))
+    
+    return segments if segments else [(text, {})]
 
 
 class ContentPDF(FPDF):
@@ -197,15 +266,98 @@ class PDFBuilder:
         pdf.ln(2)
 
     def _render_paragraph(self, pdf: ContentPDF, text: str):
+        """Render paragraph with Markdown inline formatting support."""
+        segments = _parse_markdown_inline(text)
+        
+        # Check if we need to render with formatting
+        has_formatting = any(style for _, style in segments if style)
+        
+        if not has_formatting:
+            # Simple case: no formatting
+            pdf.set_font("helvetica", "", 11)
+            pdf.multi_cell(0, 6, _safe(text))
+            pdf.ln(1)
+            return
+        
+        # Complex case: render each segment with its own style
         pdf.set_font("helvetica", "", 11)
-        pdf.multi_cell(0, 6, _safe(text))
-        pdf.ln(1)
+        x_start = pdf.get_x()
+        y_start = pdf.get_y()
+        
+        for seg_text, style in segments:
+            if not seg_text:
+                continue
+            
+            # Determine font style
+            font_style = ""
+            if style.get('bold'):
+                font_style = "B"
+            elif style.get('italic'):
+                font_style = "I"
+            elif style.get('code'):
+                font_style = ""
+            
+            # Set font
+            if style.get('code'):
+                pdf.set_font("courier", "", 10)
+            else:
+                pdf.set_font("helvetica", font_style, 11)
+            
+            # Set color for links
+            if style.get('link'):
+                pdf.set_text_color(0, 0, 255)  # Blue for links
+            
+            # Write text
+            pdf.write(6, _safe(seg_text))
+            
+            # Reset color
+            if style.get('link'):
+                pdf.set_text_color(0, 0, 0)  # Reset to black
+        
+        pdf.ln(7)  # Move to next line after paragraph
 
     def _render_list(self, pdf: ContentPDF, text: str, ordered: bool, idx: int):
-        pdf.set_font("helvetica", "", 11)
+        """Render list item with Markdown inline formatting support."""
         bullet = f"{idx}. " if ordered else "• "
-        pdf.multi_cell(0, 6, _safe(f"{bullet}{text}"))
-        pdf.ln(1)
+        
+        segments = _parse_markdown_inline(text)
+        has_formatting = any(style for _, style in segments if style)
+        
+        if not has_formatting:
+            # Simple case
+            pdf.set_font("helvetica", "", 11)
+            pdf.multi_cell(0, 6, _safe(f"{bullet}{text}"))
+            pdf.ln(1)
+            return
+        
+        # Complex case: render bullet then formatted text
+        pdf.set_font("helvetica", "", 11)
+        pdf.write(6, _safe(bullet))
+        
+        for seg_text, style in segments:
+            if not seg_text:
+                continue
+            
+            font_style = ""
+            if style.get('bold'):
+                font_style = "B"
+            elif style.get('italic'):
+                font_style = "I"
+            
+            if style.get('code'):
+                pdf.set_font("courier", "", 10)
+            else:
+                pdf.set_font("helvetica", font_style, 11)
+            
+            if style.get('link'):
+                pdf.set_text_color(0, 0, 255)
+            
+            pdf.write(6, _safe(seg_text))
+            
+            if style.get('link'):
+                pdf.set_text_color(0, 0, 0)
+        
+        pdf.ln(7)
 
     def _render_image(self, pdf: ContentPDF, path: str, alt: str | None = None):
         if not path or not os.path.exists(path):
