@@ -1,0 +1,6 @@
+beautifulsoup4==4.12.3
+requests==2.31.0
+lxml==5.1.0; platform_system != "Windows"
+lxml; platform_system == "Windows"
+fpdf2==2.7.9
+Pillow==10.4.0
